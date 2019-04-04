@@ -1,6 +1,7 @@
 pragma solidity ^0.4.24;
 
 import "ds-math/math.sol";
+import "./SetLib.sol";
 
 interface IERC20 {
     function allowance(address, address) external view returns (uint);
@@ -49,14 +50,18 @@ interface PepInterface {
 }
 
 contract CdpBank is DSMath{
+    using SetLib for SetLib.Set;
     address public owner;
     
     address cdpAddr; // SaiTub
     mapping(uint => address) cdps; // CDP Number >>> Borrower
-    mapping(address => uint[]) addresses; // Borrower >>> CDP IDS
+    mapping(address => SetLib.Set) guys; // Borrower >>> CDP IDS
+    uint16 fee = 0; // fee / 10000
+    
     bool public freezed;
 
     event SetOwner(address from, address to);
+    event SetFee(uint16 from, uint16 to);
     event NewCup(uint cdpId, address borrower);
     event LockedETH(uint cdpId, address borrower, uint lockETH, uint lockPETH);
     event LoanedDAI(uint cdpId, address borrower, uint loanDAI, address payTo);
@@ -94,6 +99,11 @@ contract CdpBank is DSMath{
         owner = guy;
     }
 
+    function setFee(uint16 newFee) public onlyAdmin {
+        emit SetFee(fee, newFee);
+        fee = newFee;
+    }
+
     function pethPEReth(uint ethNum) public view returns (uint rpeth) {
         MakerCDP loanMaster = MakerCDP(cdpAddr);
         rpeth = rdiv(ethNum, loanMaster.per());
@@ -107,6 +117,7 @@ contract CdpBank is DSMath{
         if(cdpId == 0){
             cup = loanMaster.open();
             cdps[uint(cup)] = msg.sender;
+            guys[msg.sender].add(uint(cup));
             emit NewCup(uint(cup), msg.sender);
         }
 
@@ -143,6 +154,12 @@ contract CdpBank is DSMath{
         uint mkrBalance = mkrTkn.balanceOf(address(this)); // contract MKR balance before wiping
         daiTkn.transferFrom(msg.sender, address(this), daiWipe); // get DAI to pay the debt
         loanMaster.wipe(cup, daiWipe); // wipe DAI
+
+        if(fee > 0){
+            uint fees = (daiWipe * fee / 10000);
+            daiTkn.transferFrom(msg.sender, address(this), fees);
+        }
+
         uint mkrCharged = mkrBalance - mkrTkn.balanceOf(address(this)); // MKR fee = before wiping bal - after wiping bal
 
         uint mkrSenderBalance = mkrTkn.balanceOf(msg.sender);
@@ -189,6 +206,10 @@ contract CdpBank is DSMath{
         msg.sender.transfer(wethBal);
 
         cdps[cdpId] = address(0x0);
+        require(guys[msg.sender].remove(cdpId), "");
+        if(guys[msg.sender].size() == 0){
+            delete guys[msg.sender];
+        }
 
         emit ShutCDP(cdpId, msg.sender, daiDebt, wethBal);
     }
@@ -210,6 +231,10 @@ contract CdpBank is DSMath{
         msg.sender.transfer(wethBal);  // ETH to borrower
 
         cdps[cdpId] = address(0x0);
+        require(guys[msg.sender].remove(cdpId), "");
+        if(guys[msg.sender].size() == 0){
+            delete guys[msg.sender];
+        }
 
         emit ShutCDP(cdpId, msg.sender, daiDebt, wethBal);
     }
@@ -217,6 +242,11 @@ contract CdpBank is DSMath{
     function transferInternal(uint cdpId, address nextOwner) public isCupOwner(cdpId) {
         require(nextOwner != address(0x0), "Invalid Address.");
         cdps[cdpId] = nextOwner;
+        require(guys[nextOwner].add(cdpId), "");
+        require(guys[msg.sender].remove(cdpId), "");
+        if(guys[msg.sender].size() ==0){
+            delete guys[msg.sender];
+        }
         emit TransferInternal(cdpId, msg.sender, nextOwner);
     }
 
@@ -225,6 +255,10 @@ contract CdpBank is DSMath{
         MakerCDP tub = MakerCDP(cdpAddr);
         tub.give(bytes32(cdpId), nextOwner);
         cdps[cdpId] = address(0x0);
+        require(guys[msg.sender].remove(cdpId), "");
+        if(guys[msg.sender].size() == 0){
+            delete guys[msg.sender];
+        }
         emit TransferExternal(cdpId, msg.sender, nextOwner);
     }
 
@@ -253,6 +287,10 @@ contract CdpBank is DSMath{
         IERC20 mkrTkn = IERC20(tub.gov());
         mkrTkn.transfer(msg.sender, amount);
         emit MKRCollected(amount);
+    }
+
+    function getCdps(address guy) public returns(uint[]){
+        return guys[guy].getKeys();
     }
 
     function handleGovFee(MakerCDP tub, uint saiDebtFee, address otc_) internal {
