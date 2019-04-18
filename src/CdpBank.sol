@@ -71,6 +71,7 @@ contract CdpBank is DSMath{
     event TransferInternal(uint cdpId, address owner, address nextOwner);
     event TransferExternal(uint cdpId, address owner, address nextOwner);
     event MKRCollected(uint amount);
+    event DAICollected(uint amount);
 
     constructor(address tubAddr) public{
         owner = msg.sender;
@@ -287,6 +288,13 @@ contract CdpBank is DSMath{
         IERC20 mkrTkn = IERC20(tub.gov());
         mkrTkn.transfer(msg.sender, amount);
         emit MKRCollected(amount);
+    }
+
+    function collectDAI(uint amount) public onlyAdmin {
+        MakerCDP tub = MakerCDP(cdpAddr);
+        IERC20 daiTkn = IERC20(tub.sai());
+        daiTkn.transfer(msg.sender, amount);
+        emit DAICollected(amount);
     }
 
     function getCdps(address guy) public returns(uint[]){
